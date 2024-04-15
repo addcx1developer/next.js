@@ -104,6 +104,7 @@ import { interopDefault } from '../lib/interop-default'
 import { formatDynamicImportPath } from '../lib/format-dynamic-import-path'
 import type { NextFontManifest } from '../build/webpack/plugins/next-font-manifest-plugin'
 import { isInterceptionRouteRewrite } from '../lib/generate-interception-routes-rewrites'
+import { runWithNodeWaitUntil } from './after/wait-until-node'
 
 export * from './base-server'
 
@@ -1102,139 +1103,141 @@ export default class NextNodeServer extends BaseServer<
     })
 
     const handler = super.getRequestHandler()
-    return (req, res, parsedUrl) => {
-      const normalizedReq = this.normalizeReq(req)
-      const normalizedRes = this.normalizeRes(res)
+    return async (req, res, parsedUrl) => {
+      return await runWithNodeWaitUntil(() => {
+        const normalizedReq = this.normalizeReq(req)
+        const normalizedRes = this.normalizeRes(res)
 
-      const loggingFetchesConfig = this.nextConfig.logging?.fetches
-      const enabledVerboseLogging = !!loggingFetchesConfig
-      const shouldTruncateUrl = !loggingFetchesConfig?.fullUrl
+        const loggingFetchesConfig = this.nextConfig.logging?.fetches
+        const enabledVerboseLogging = !!loggingFetchesConfig
+        const shouldTruncateUrl = !loggingFetchesConfig?.fullUrl
 
-      if (this.renderOpts.dev) {
-        const { blue, green, yellow, red, gray, white } =
-          require('../lib/picocolors') as typeof import('../lib/picocolors')
+        if (this.renderOpts.dev) {
+          const { blue, green, yellow, red, gray, white } =
+            require('../lib/picocolors') as typeof import('../lib/picocolors')
 
-        const { originalResponse } = normalizedRes
+          const { originalResponse } = normalizedRes
 
-        const reqStart = Date.now()
+          const reqStart = Date.now()
 
-        const reqCallback = () => {
-          // we don't log for non-route requests
-          const isRouteRequest = getRequestMeta(req).match
-          const isRSC = isRSCRequestCheck(normalizedReq)
-          if (!isRouteRequest || isRSC) return
+          const reqCallback = () => {
+            // we don't log for non-route requests
+            const isRouteRequest = getRequestMeta(req).match
+            const isRSC = isRSCRequestCheck(normalizedReq)
+            if (!isRouteRequest || isRSC) return
 
-          const reqEnd = Date.now()
-          const fetchMetrics = normalizedReq.fetchMetrics || []
-          const reqDuration = reqEnd - reqStart
+            const reqEnd = Date.now()
+            const fetchMetrics = normalizedReq.fetchMetrics || []
+            const reqDuration = reqEnd - reqStart
 
-          const statusColor = (status?: number) => {
-            if (!status || status < 200) return white
-            else if (status < 300) return green
-            else if (status < 400) return blue
-            else if (status < 500) return yellow
-            return red
-          }
-
-          const color = statusColor(res.statusCode)
-          const method = req.method || 'GET'
-          writeStdoutLine(
-            `${method} ${req.url ?? ''} ${color(
-              (res.statusCode ?? 200).toString()
-            )} in ${reqDuration}ms`
-          )
-
-          if (fetchMetrics.length && enabledVerboseLogging) {
-            const calcNestedLevel = (
-              prevMetrics: FetchMetric[],
-              start: number
-            ): string => {
-              let nestedLevel = 0
-
-              for (let i = 0; i < prevMetrics.length; i++) {
-                const metric = prevMetrics[i]
-                const prevMetric = prevMetrics[i - 1]
-
-                if (
-                  metric.end <= start &&
-                  !(prevMetric && prevMetric.start < metric.end)
-                ) {
-                  nestedLevel += 1
-                }
-              }
-              return nestedLevel === 0 ? ' ' : ' │ '.repeat(nestedLevel)
+            const statusColor = (status?: number) => {
+              if (!status || status < 200) return white
+              else if (status < 300) return green
+              else if (status < 400) return blue
+              else if (status < 500) return yellow
+              return red
             }
 
-            for (let i = 0; i < fetchMetrics.length; i++) {
-              const metric = fetchMetrics[i]
-              let { cacheStatus, cacheReason } = metric
-              let cacheReasonStr = ''
+            const color = statusColor(res.statusCode)
+            const method = req.method || 'GET'
+            writeStdoutLine(
+              `${method} ${req.url ?? ''} ${color(
+                (res.statusCode ?? 200).toString()
+              )} in ${reqDuration}ms`
+            )
 
-              let cacheColor
-              const duration = metric.end - metric.start
-              if (cacheStatus === 'hit') {
-                cacheColor = green
-              } else {
-                cacheColor = yellow
-                const status = cacheStatus === 'skip' ? 'skipped' : 'missed'
-                cacheReasonStr = gray(
-                  `Cache ${status} reason: (${white(cacheReason)})`
-                )
-              }
-              let url = metric.url
+            if (fetchMetrics.length && enabledVerboseLogging) {
+              const calcNestedLevel = (
+                prevMetrics: FetchMetric[],
+                start: number
+              ): string => {
+                let nestedLevel = 0
 
-              if (url.length > 48) {
-                const parsed = new URL(url)
-                const truncatedHost = formatRequestUrl(
-                  parsed.host,
-                  shouldTruncateUrl ? 16 : undefined
-                )
-                const truncatedPath = formatRequestUrl(
-                  parsed.pathname,
-                  shouldTruncateUrl ? 24 : undefined
-                )
-                const truncatedSearch = formatRequestUrl(
-                  parsed.search,
-                  shouldTruncateUrl ? 16 : undefined
-                )
+                for (let i = 0; i < prevMetrics.length; i++) {
+                  const metric = prevMetrics[i]
+                  const prevMetric = prevMetrics[i - 1]
 
-                url =
-                  parsed.protocol +
-                  '//' +
-                  truncatedHost +
-                  truncatedPath +
-                  truncatedSearch
+                  if (
+                    metric.end <= start &&
+                    !(prevMetric && prevMetric.start < metric.end)
+                  ) {
+                    nestedLevel += 1
+                  }
+                }
+                return nestedLevel === 0 ? ' ' : ' │ '.repeat(nestedLevel)
               }
 
-              const status = cacheColor(`(cache ${cacheStatus})`)
-              const newLineLeadingChar = '│'
-              const nestedIndent = calcNestedLevel(
-                fetchMetrics.slice(0, i + 1),
-                metric.start
-              )
+              for (let i = 0; i < fetchMetrics.length; i++) {
+                const metric = fetchMetrics[i]
+                let { cacheStatus, cacheReason } = metric
+                let cacheReasonStr = ''
 
-              writeStdoutLine(
-                `${newLineLeadingChar}${nestedIndent}${white(
-                  metric.method
-                )} ${white(url)} ${metric.status} in ${duration}ms ${status}`
-              )
-              if (cacheReasonStr) {
-                const nextNestedIndent = calcNestedLevel(
+                let cacheColor
+                const duration = metric.end - metric.start
+                if (cacheStatus === 'hit') {
+                  cacheColor = green
+                } else {
+                  cacheColor = yellow
+                  const status = cacheStatus === 'skip' ? 'skipped' : 'missed'
+                  cacheReasonStr = gray(
+                    `Cache ${status} reason: (${white(cacheReason)})`
+                  )
+                }
+                let url = metric.url
+
+                if (url.length > 48) {
+                  const parsed = new URL(url)
+                  const truncatedHost = formatRequestUrl(
+                    parsed.host,
+                    shouldTruncateUrl ? 16 : undefined
+                  )
+                  const truncatedPath = formatRequestUrl(
+                    parsed.pathname,
+                    shouldTruncateUrl ? 24 : undefined
+                  )
+                  const truncatedSearch = formatRequestUrl(
+                    parsed.search,
+                    shouldTruncateUrl ? 16 : undefined
+                  )
+
+                  url =
+                    parsed.protocol +
+                    '//' +
+                    truncatedHost +
+                    truncatedPath +
+                    truncatedSearch
+                }
+
+                const status = cacheColor(`(cache ${cacheStatus})`)
+                const newLineLeadingChar = '│'
+                const nestedIndent = calcNestedLevel(
                   fetchMetrics.slice(0, i + 1),
                   metric.start
                 )
 
                 writeStdoutLine(
-                  `${newLineLeadingChar}${nextNestedIndent}${newLineLeadingChar} ${cacheReasonStr}`
+                  `${newLineLeadingChar}${nestedIndent}${white(
+                    metric.method
+                  )} ${white(url)} ${metric.status} in ${duration}ms ${status}`
                 )
+                if (cacheReasonStr) {
+                  const nextNestedIndent = calcNestedLevel(
+                    fetchMetrics.slice(0, i + 1),
+                    metric.start
+                  )
+
+                  writeStdoutLine(
+                    `${newLineLeadingChar}${nextNestedIndent}${newLineLeadingChar} ${cacheReasonStr}`
+                  )
+                }
               }
             }
+            originalResponse.off('close', reqCallback)
           }
-          originalResponse.off('close', reqCallback)
+          originalResponse.on('close', reqCallback)
         }
-        originalResponse.on('close', reqCallback)
-      }
-      return handler(normalizedReq, normalizedRes, parsedUrl)
+        return handler(normalizedReq, normalizedRes, parsedUrl)
+      })
     }
   }
 

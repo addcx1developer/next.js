@@ -132,8 +132,12 @@ export const RequestAsyncStorageWrapper: AsyncStorageWrapper<
       },
       reactLoadableManifest: renderOpts?.reactLoadableManifest || {},
       assetPrefix: renderOpts?.assetPrefix || '',
+      // TODO(after): inject this in a less hacky way
+      // @ts-expect-error
+      get React() {
+        return renderOpts?.ComponentMod.React
+      },
     }
-
     return storage.run(store, callback, store)
   },
 }

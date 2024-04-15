@@ -37,7 +37,13 @@ function patchFetch() {
   return _patchFetch({ serverHooks, staticGenerationAsyncStorage })
 }
 
+import * as React from 'react'
+import { patchCacheDispatcherWhenSet } from '../after/react-cache'
+
+patchCacheDispatcherWhenSet(React)
+
 export {
+  React,
   AppRouter,
   LayoutRouter,
   RenderFromTemplateContext,

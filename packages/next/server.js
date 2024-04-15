@@ -11,7 +11,7 @@ const serverExports = {
     .userAgent,
   URLPattern: require('next/dist/server/web/spec-extension/url-pattern')
     .URLPattern,
-  after: require('next/dist/server/after').after,
+  after: require('next/dist/server/after/after').after,
 }
 
 // https://nodejs.org/api/esm.html#commonjs-namespaces

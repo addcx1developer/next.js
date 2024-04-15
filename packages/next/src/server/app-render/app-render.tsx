@@ -1436,6 +1436,7 @@ export const renderToHTMLOrFlight: AppPageRender = (
   query,
   renderOpts
 ) => {
+  // console.trace('renderToHTMLOrFlight')
   // TODO: this includes query string, should it?
   const pathname = validateURL(req.url)
 

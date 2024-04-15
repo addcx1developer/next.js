@@ -140,6 +140,8 @@ import { toRoute } from './lib/to-route'
 import type { DeepReadonly } from '../shared/lib/deep-readonly'
 import { isNodeNextRequest, isNodeNextResponse } from './base-http/helpers'
 import { patchSetHeaderWithCookieSupport } from './lib/patch-set-header'
+import { runWithAfter } from './after/after'
+import { getWaitUntil } from './after/wait-until'
 
 export type FindComponentsResult = {
   components: LoadComponentsReturnType
@@ -805,7 +807,6 @@ export default abstract class Server<
     await this.prepare()
     const method = req.method.toUpperCase()
     const rsc = isRSCRequestCheck(req) ? 'RSC ' : ''
-
     const tracer = getTracer()
     return tracer.withPropagatedContext(req.headers, () => {
       return tracer.trace(
@@ -820,7 +821,9 @@ export default abstract class Server<
           },
         },
         async (span) =>
-          this.handleRequestImpl(req, res, parsedUrl).finally(() => {
+          this.runWithAfter(() =>
+            this.handleRequestImpl(req, res, parsedUrl)
+          ).finally(() => {
             if (!span) return
             span.setAttributes({
               'http.status_code': res.statusCode,
@@ -861,6 +864,7 @@ export default abstract class Server<
     res: ServerResponse,
     parsedUrl?: NextUrlWithParsedQuery
   ): Promise<void> {
+    console.log('BaseServer :: handleRequestImpl')
     try {
       // Wait for the matchers to be ready.
       await this.matchers.waitTillReady()
@@ -1626,9 +1630,20 @@ export default abstract class Server<
     parsedUrl?: NextUrlWithParsedQuery,
     internalRender = false
   ): Promise<void> {
-    return getTracer().trace(BaseServerSpan.render, async () =>
+    return await getTracer().trace(BaseServerSpan.render, async () =>
       this.renderImpl(req, res, pathname, query, parsedUrl, internalRender)
     )
+  }
+
+  private runWithAfter<T>(fn: () => T): Promise<T> {
+    const waitUntil = getWaitUntil(
+      process.env.NEXT_RUNTIME === 'edge'
+        ? 'edge'
+        : this.minimalMode
+        ? 'minimal'
+        : 'node'
+    )
+    return runWithAfter(waitUntil, fn)
   }
 
   private async renderImpl(
@@ -2232,7 +2247,6 @@ export default abstract class Server<
         // make sure to only add query values from original URL
         query: origQuery,
       })
-
       const renderOpts: LoadedRenderOpts = {
         ...components,
         ...opts,

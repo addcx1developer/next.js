@@ -864,7 +864,6 @@ export default abstract class Server<
     res: ServerResponse,
     parsedUrl?: NextUrlWithParsedQuery
   ): Promise<void> {
-    console.log('BaseServer :: handleRequestImpl')
     try {
       // Wait for the matchers to be ready.
       await this.matchers.waitTillReady()

@@ -26,9 +26,7 @@ export async function runWithNodeWaitUntil<T>(callback: () => T): Promise<T> {
     return await waitUntilStorage.run(ctx.waitUntil, callback)
   } finally {
     // TODO(after): requestAsyncStorage, cache()
-    await getTracer().trace(NextNodeServerSpan.runAfterCallbacks, () =>
-      ctx.finish()
-    )
+    await getTracer().trace(NextNodeServerSpan.waitUntil, () => ctx.finish())
   }
 }
 

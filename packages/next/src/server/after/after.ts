@@ -1,15 +1,18 @@
 import { AsyncLocalStorage } from 'async_hooks'
 import { DetachedPromise } from '../../lib/detached-promise'
+
 import {
-  type RequestStore,
   requestAsyncStorage,
+  type RequestStore,
 } from '../../client/components/request-async-storage.external'
+import { staticGenerationAsyncStorage } from '../../client/components/static-generation-async-storage.external'
+
+import { BaseServerSpan } from '../lib/trace/constants'
+import { getTracer } from '../lib/trace/tracer'
 import {
-  runWithReactCacheDispatcher,
-  type CacheDispatcher,
-  getReactCacheDispatcher,
-  createCacheMap,
   CacheDispatcherCacheStorage,
+  createCacheMap,
+  runWithReactCacheDispatcher,
 } from './react-cache'
 
 type AfterStore = {
@@ -50,53 +53,72 @@ export async function runWithAfter<T>(
   waitUntil: WaitUntilFn,
   callback: (store: AfterStore) => T
 ) {
-  // console.error('runWithAfter', { waitUntil })
   let outerStore = afterAsyncStorage.getStore()
   if (outerStore) {
     return callback(outerStore)
   }
 
-  const afterCallbacks: AfterCallback[] = []
-  let callbacksExecutedPromise: DetachedPromise | undefined
+  let isStaticGeneration: boolean | undefined = undefined
+  let didWarnAboutAfterInStatic = false
 
-  let capturedRequestStore: RequestStore | undefined = undefined
-  let capturedCacheDispatcher: CacheDispatcher | null | undefined = undefined
+  const keepaliveLock = createKeepaliveLock(waitUntil)
+  const afterCallbacks: AfterCallback[] = []
+
   const cache = createCacheMap()
 
-  const afterImpl = (task: AfterTask) => {
-    // console.trace('after()', task)
-    if (capturedRequestStore === undefined) {
-      capturedRequestStore = requestAsyncStorage.getStore()
-      // console.debug(
-      //   'after :: Captured requestAsyncStorage',
-      //   capturedRequestStore
-      // )
+  type CapturedContext = {
+    requestStore: RequestStore
+  }
+
+  let context: CapturedContext | undefined = undefined
+
+  const captureContext = (): CapturedContext => {
+    const requestStore = requestAsyncStorage.getStore()
+    if (!requestStore) {
+      throw new Error('Invariant: requestAsyncStorage not found')
     }
-    if (capturedCacheDispatcher === undefined) {
-      const React = getReact()
-      capturedCacheDispatcher = getReactCacheDispatcher(React)
-      if (capturedCacheDispatcher) {
-        // patchReactCache(capturedCacheDispatcher)
-        // console.debug(
-        //   'after :: Captured requestAsyncStorage',
-        //   capturedRequestStore
-        // )
-      } else {
-        console.error('Internal error in after(): no cache dispatcher found')
+
+    return {
+      requestStore,
+    }
+  }
+
+  const afterImpl = (task: AfterTask) => {
+    if (isStaticGeneration === undefined) {
+      isStaticGeneration =
+        staticGenerationAsyncStorage.getStore()?.isStaticGeneration ?? false
+    }
+
+    if (isStaticGeneration) {
+      // do not run after() for prerenders and static generation.
+      // TODO(after): how do we make this log only if no bailout happened?
+      if (!didWarnAboutAfterInStatic) {
+        const Log = require('../../build/output/log')
+        const { yellow } = require('../../lib/picocolors')
+        Log.warn(
+          yellow(
+            'A statically rendered page is using after(), which will not be executed for prerendered pages.'
+          )
+        )
+        didWarnAboutAfterInStatic = true
       }
+      return
+    }
+
+    if (!context) {
+      context = captureContext()
     }
 
     if (isPromise(task)) {
       task.catch(() => {}) // avoid unhandled rejection crashes
       waitUntil(task)
     } else if (typeof task === 'function') {
-      if (!callbacksExecutedPromise) {
-        // we don't want a worker/lambda to get stopped after the request closes but *before* we execute callbacks,
-        // so block with a dummy promise that we'll resolve when we're done.
-        callbacksExecutedPromise = new DetachedPromise<void>()
-        waitUntil(callbacksExecutedPromise.promise)
-      }
-      afterCallbacks.push(task)
+      keepaliveLock.acquire()
+
+      // TODO(after): will this trace correctly?
+      afterCallbacks.push(() =>
+        getTracer().trace(BaseServerSpan.after, () => task())
+      )
     } else {
       throw new Error('after() must receive a promise or a function')
     }
@@ -109,29 +131,13 @@ export async function runWithAfter<T>(
   const runCallbacks = () => {
     if (!afterCallbacks.length) return
 
-    const requestStore = capturedRequestStore
-    const cacheDispatcher = capturedCacheDispatcher
-
-    // console.log('running after() callbacks', {
-    //   requestStore,
-    //   cacheDispatcher,
-    // })
-
-    if (requestStore === undefined) {
+    if (!context) {
       throw new Error(
         // TODO(after): how do we do error messages like this?
-        'Internal error: did not capture request context for after() callbacks'
+        'Invariant: did not capture request context for after() callbacks'
       )
     }
-
-    if (cacheDispatcher === undefined) {
-      throw new Error(
-        // TODO(after): how do we do error messages like this?
-        'Internal error: did not capture cache dispatcher request context for after() callbacks'
-      )
-    }
-
-    // TODO(after): warn for cache() too when that's fixed
+    const { requestStore } = context
 
     const runCallbacksImpl = () => {
       // callbacks can call after() again and schedule more callbacks,
@@ -156,9 +162,7 @@ export async function runWithAfter<T>(
         }
       }
 
-      if (callbacksExecutedPromise) {
-        callbacksExecutedPromise.resolve(undefined)
-      }
+      keepaliveLock.release()
     }
 
     afterAsyncStorage.run(store, () =>
@@ -169,16 +173,40 @@ export async function runWithAfter<T>(
   }
 
   try {
-    return await CacheDispatcherCacheStorage.run(cache, () =>
+    const res = await CacheDispatcherCacheStorage.run(cache, () =>
       afterAsyncStorage.run(store, callback, store)
     )
-    // TODO(after): it'd be idea to patch the dispatcher at the beginning of the render to capture everything,
-    // but in practice getCacheForType is only called with one argument, so any call we capture should be fine
-    // return await runWithReactCache(cache, () =>
-    //   afterAsyncStorage.run(store, callback, store)
-    // )
+    if (!isStaticGeneration) {
+      runCallbacks()
+    }
+    return res
   } finally {
-    runCallbacks()
+    // if something failed, make sure we don't stay open forever.
+    keepaliveLock.release()
+  }
+}
+
+function createKeepaliveLock(waitUntil: WaitUntilFn) {
+  // callbacks can't go directly into waitUntil,
+  // and we don't want a function invocation to get stopped *before* we execute the callbacks,
+  // so block with a dummy promise that we'll resolve when we're done.
+  let keepalivePromise: DetachedPromise<void> | undefined
+  return {
+    isLocked() {
+      return !!keepalivePromise
+    },
+    acquire() {
+      if (!keepalivePromise) {
+        keepalivePromise = new DetachedPromise<void>()
+        waitUntil(keepalivePromise.promise)
+      }
+    },
+    release() {
+      if (keepalivePromise) {
+        keepalivePromise.resolve(undefined)
+        keepalivePromise = undefined
+      }
+    },
   }
 }
 

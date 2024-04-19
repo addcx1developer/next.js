@@ -1451,14 +1451,12 @@ export const renderToHTMLOrFlight: AppPageRender = (
           renderOpts,
         },
         (staticGenerationStore) =>
-          requestStore.cacheScope.run(() =>
-            renderToHTMLOrFlightImpl(req, res, pagePath, query, renderOpts, {
-              requestStore,
-              staticGenerationStore,
-              componentMod: renderOpts.ComponentMod,
-              renderOpts,
-            })
-          )
+          renderToHTMLOrFlightImpl(req, res, pagePath, query, renderOpts, {
+            requestStore,
+            staticGenerationStore,
+            componentMod: renderOpts.ComponentMod,
+            renderOpts,
+          })
       )
   )
 }

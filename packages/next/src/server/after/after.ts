@@ -71,7 +71,6 @@ export async function runWithAfter<T>(
   }
 
   const afterImpl = (task: AfterTask) => {
-    console.log('after()')
     if (isStaticGeneration === undefined) {
       isStaticGeneration =
         staticGenerationAsyncStorage.getStore()?.isStaticGeneration ?? false
@@ -127,10 +126,13 @@ export async function runWithAfter<T>(
       )
     }
     const { requestStore } = context
+    const { cacheScope } = requestStore
 
     const runCallbacksImpl = () => {
       // callbacks can call after() again and schedule more callbacks,
       // so this can get mutated as we iterate.
+      // TODO(after): might not work if after() is called after an await (and we don't await the callbacks here.)
+      // when we start this loop, we should do something like patch .push to auto-run anything that gets added later
       while (afterCallbacks.length) {
         const afterCallback = afterCallbacks.shift()!
 
@@ -150,13 +152,11 @@ export async function runWithAfter<T>(
           )
         }
       }
-
-      keepaliveLock.release()
     }
 
     afterAsyncStorage.run(store, () =>
       requestAsyncStorage.run(requestStore, () =>
-        requestStore.cacheScope.run(runCallbacksImpl)
+        cacheScope ? cacheScope.run(runCallbacksImpl) : runCallbacksImpl()
       )
     )
   }

@@ -17,7 +17,7 @@ export interface RequestStore {
     Record<string, { files: string[] }>
   >
   readonly assetPrefix: string
-  readonly cacheScope: CacheScope
+  readonly cacheScope?: CacheScope
 }
 
 export type RequestAsyncStorage = AsyncLocalStorage<RequestStore>

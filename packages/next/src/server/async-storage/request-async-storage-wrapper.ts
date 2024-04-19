@@ -20,7 +20,6 @@ import {
 import type { ResponseCookies } from '../web/spec-extension/cookies'
 import { RequestCookies } from '../web/spec-extension/cookies'
 import { DraftModeProvider } from './draft-mode-provider'
-import type { CacheScope } from '../after/react-cache'
 
 function getHeaders(headers: Headers | IncomingHttpHeaders): ReadonlyHeaders {
   const cleaned = HeadersAdapter.from(headers)
@@ -77,6 +76,13 @@ export const RequestAsyncStorageWrapper: AsyncStorageWrapper<
       previewProps = (renderOpts as any).previewProps
     }
 
+    const cacheScope = renderOpts?.ComponentMod.createCacheScope()
+    if (cacheScope) {
+      const originalCallback = callback
+      callback = (requestStore) =>
+        cacheScope.run(() => originalCallback(requestStore))
+    }
+
     function defaultOnUpdateCookies(cookies: string[]) {
       if (res) {
         res.setHeader('Set-Cookie', cookies)
@@ -88,7 +94,6 @@ export const RequestAsyncStorageWrapper: AsyncStorageWrapper<
       cookies?: ReadonlyRequestCookies
       mutableCookies?: ResponseCookies
       draftMode?: DraftModeProvider
-      cacheScope?: CacheScope
     } = {}
 
     const store: RequestStore = {
@@ -132,16 +137,10 @@ export const RequestAsyncStorageWrapper: AsyncStorageWrapper<
 
         return cache.draftMode
       },
-      get cacheScope() {
-        if (!cache.cacheScope) {
-          cache.cacheScope = renderOpts?.ComponentMod.createCacheScope()
-        }
-        return cache.cacheScope!
-      },
 
       reactLoadableManifest: renderOpts?.reactLoadableManifest || {},
       assetPrefix: renderOpts?.assetPrefix || '',
-      // TODO(after): inject this in a less hacky way
+      cacheScope,
     }
     return storage.run(store, callback, store)
   },

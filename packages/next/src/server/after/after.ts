@@ -1,34 +1,24 @@
-import { AsyncLocalStorage } from 'async_hooks'
 import { DetachedPromise } from '../../lib/detached-promise'
 
-import { requestAsyncStorage } from '../../client/components/request-async-storage.external'
+import {
+  requestAsyncStorage,
+  type RequestStore,
+} from '../../client/components/request-async-storage.external'
 import { staticGenerationAsyncStorage } from '../../client/components/static-generation-async-storage.external'
 
 import { BaseServerSpan } from '../lib/trace/constants'
 import { getTracer } from '../lib/trace/tracer'
-
-type AfterStore = {
-  after: AfterFn
-}
+import type { CacheScope } from './react-cache'
+import { ResponseCookies } from '../web/spec-extension/cookies'
 
 type AfterTask<T = unknown> = Promise<T> | AfterCallback<T>
 type AfterCallback<T = unknown> = () => T | Promise<T>
 
 type WaitUntilFn = <T>(promise: Promise<T>) => void
-type AfterFn = <T>(promiseOrCallback: AfterTask<T>) => void
-
-const STORAGE_SYMBOL = Symbol.for('next.afterAsyncStorage')
-const _globalThis = globalThis as typeof globalThis & {
-  [STORAGE_SYMBOL]?: AsyncLocalStorage<AfterStore>
-}
-
-const afterAsyncStorage =
-  _globalThis[STORAGE_SYMBOL] ||
-  (_globalThis[STORAGE_SYMBOL] = new AsyncLocalStorage<AfterStore>())
 
 export function after<T>(task: AfterTask<T>) {
-  const store = afterAsyncStorage.getStore()
-  if (!store) {
+  const requestStore = requestAsyncStorage.getStore()
+  if (!requestStore) {
     throw new Error(
       'Invalid after() call. after() can only be called:\n' +
         '  - from within a server component\n' +
@@ -37,38 +27,27 @@ export function after<T>(task: AfterTask<T>) {
         '  - in middleware\n' // TODO(after): not implemented
     )
   }
-  store.after(task)
+  const { afterContext } = requestStore
+  if (!afterContext) {
+    throw new Error('Invariant: No afterContext in requestStore')
+  }
+  return afterContext.after(task)
 }
 
-// TODO(after): maybe we factor out the waitUntil and just return a combined promise here? not sure
-export async function runWithAfter<T>(
-  waitUntil: WaitUntilFn,
-  callback: (store: AfterStore) => T
-) {
-  let outerStore = afterAsyncStorage.getStore()
-  if (outerStore) {
-    return callback(outerStore)
-  }
+export type AfterContext = ReturnType<typeof createAfter>
 
+export function createAfter({
+  waitUntil,
+  cacheScope,
+}: {
+  waitUntil: WaitUntilFn
+  cacheScope: CacheScope
+}) {
   let isStaticGeneration: boolean | undefined = undefined
   let didWarnAboutAfterInStatic = false
 
   const keepaliveLock = createKeepaliveLock(waitUntil)
   const afterCallbacks: AfterCallback[] = []
-
-  let context: CapturedContext | undefined = undefined
-  type CapturedContext = ReturnType<typeof captureContext>
-
-  const captureContext = () => {
-    const requestStore = requestAsyncStorage.getStore()
-    if (!requestStore) {
-      throw new Error('Invariant: requestAsyncStorage not found')
-    }
-
-    return {
-      requestStore,
-    }
-  }
 
   const afterImpl = (task: AfterTask) => {
     if (isStaticGeneration === undefined) {
@@ -93,10 +72,6 @@ export async function runWithAfter<T>(
       return
     }
 
-    if (!context) {
-      context = captureContext()
-    }
-
     if (isPromise(task)) {
       task.catch(() => {}) // avoid unhandled rejection crashes
       waitUntil(task)
@@ -112,21 +87,8 @@ export async function runWithAfter<T>(
     }
   }
 
-  const store: AfterStore = {
-    after: afterImpl,
-  }
-
-  const runCallbacks = () => {
+  const runCallbacks = (requestStore: RequestStore) => {
     if (!afterCallbacks.length) return
-
-    if (!context) {
-      throw new Error(
-        // TODO(after): how do we do error messages like this?
-        'Invariant: did not capture request context for after() callbacks'
-      )
-    }
-    const { requestStore } = context
-    const { cacheScope } = requestStore
 
     const runCallbacksImpl = () => {
       // callbacks can call after() again and schedule more callbacks,
@@ -154,22 +116,49 @@ export async function runWithAfter<T>(
       }
     }
 
-    afterAsyncStorage.run(store, () =>
-      requestAsyncStorage.run(requestStore, () =>
-        cacheScope ? cacheScope.run(runCallbacksImpl) : runCallbacksImpl()
-      )
+    const readonlyRequestStore: RequestStore = {
+      get headers() {
+        return requestStore.headers
+      },
+      get cookies() {
+        return requestStore.cookies
+      },
+      get draftMode() {
+        return requestStore.draftMode
+      },
+      assetPrefix: requestStore.assetPrefix,
+      reactLoadableManifest: requestStore.reactLoadableManifest,
+      // make cookie writes go nowhere
+      mutableCookies: new ResponseCookies(new Headers()),
+      afterContext: {
+        after: () => {
+          throw new Error('Cannot call after() from within after()')
+        },
+        run: () => {
+          throw new Error('Cannot call run() from within an after() callback')
+        },
+      },
+    }
+
+    requestAsyncStorage.run(readonlyRequestStore, () =>
+      cacheScope.run(runCallbacksImpl)
     )
   }
 
-  try {
-    const res = await afterAsyncStorage.run(store, callback, store)
-    if (!isStaticGeneration) {
-      runCallbacks()
-    }
-    return res
-  } finally {
-    // if something failed, make sure we don't stay open forever.
-    keepaliveLock.release()
+  return {
+    after: afterImpl,
+    run: async <T>(requestStore: RequestStore, callback: () => T) => {
+      try {
+        const res = await cacheScope.run(() => callback())
+        if (!isStaticGeneration) {
+          runCallbacks(requestStore)
+        }
+        return res
+      } finally {
+        // if something failed, make sure we don't stay open forever.
+        keepaliveLock.release()
+      }
+    },
   }
 }
 

@@ -6,7 +6,7 @@ import type { ReadonlyRequestCookies } from '../../server/web/spec-extension/ada
 
 import { createAsyncLocalStorage } from './async-local-storage'
 import type { DeepReadonly } from '../../shared/lib/deep-readonly'
-import type { CacheScope } from '../../server/after/react-cache'
+import type { AfterContext } from '../../server/after/after'
 
 export interface RequestStore {
   readonly headers: ReadonlyHeaders
@@ -17,7 +17,7 @@ export interface RequestStore {
     Record<string, { files: string[] }>
   >
   readonly assetPrefix: string
-  readonly cacheScope?: CacheScope
+  readonly afterContext?: AfterContext
 }
 
 export type RequestAsyncStorage = AsyncLocalStorage<RequestStore>

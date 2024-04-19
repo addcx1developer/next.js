@@ -20,7 +20,7 @@ import {
 import type { ResponseCookies } from '../web/spec-extension/cookies'
 import { RequestCookies } from '../web/spec-extension/cookies'
 import { DraftModeProvider } from './draft-mode-provider'
-import { runWithAfter } from '../after/after'
+import { createAfter, type AfterContext } from '../after/after'
 import type { LoadedRenderOpts } from '../base-server'
 
 function getHeaders(headers: Headers | IncomingHttpHeaders): ReadonlyHeaders {
@@ -78,17 +78,18 @@ export const RequestAsyncStorageWrapper: AsyncStorageWrapper<
       previewProps = (renderOpts as any).previewProps
     }
 
-    const cacheScope = renderOpts?.ComponentMod.createCacheScope()
-    if (cacheScope && renderOpts && 'waitUntil' in renderOpts) {
+    let afterContext: AfterContext | undefined = undefined
+    if (renderOpts && 'waitUntil' in renderOpts) {
+      const cacheScope = renderOpts?.ComponentMod.createCacheScope()
       const { waitUntil } = renderOpts as LoadedRenderOpts
+      const _afterContext = createAfter({ waitUntil, cacheScope })
+
       const originalCallback = callback
       callback = (requestStore) =>
-        cacheScope.run(
-          () =>
-            runWithAfter(waitUntil, () =>
-              originalCallback(requestStore)
-            ) as Result // TODO(after): check if non-promise cases can happen here
-        )
+        _afterContext.run(requestStore, () =>
+          originalCallback(requestStore)
+        ) as Result // TODO(after): check if non-promise cases can happen here
+      afterContext = _afterContext
     }
 
     function defaultOnUpdateCookies(cookies: string[]) {
@@ -148,7 +149,7 @@ export const RequestAsyncStorageWrapper: AsyncStorageWrapper<
 
       reactLoadableManifest: renderOpts?.reactLoadableManifest || {},
       assetPrefix: renderOpts?.assetPrefix || '',
-      cacheScope,
+      afterContext,
     }
     return storage.run(store, callback, store)
   },

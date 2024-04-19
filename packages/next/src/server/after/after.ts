@@ -1,19 +1,11 @@
 import { AsyncLocalStorage } from 'async_hooks'
 import { DetachedPromise } from '../../lib/detached-promise'
 
-import {
-  requestAsyncStorage,
-  type RequestStore,
-} from '../../client/components/request-async-storage.external'
+import { requestAsyncStorage } from '../../client/components/request-async-storage.external'
 import { staticGenerationAsyncStorage } from '../../client/components/static-generation-async-storage.external'
 
 import { BaseServerSpan } from '../lib/trace/constants'
 import { getTracer } from '../lib/trace/tracer'
-import {
-  CacheDispatcherCacheStorage,
-  createCacheMap,
-  runWithReactCacheDispatcher,
-} from './react-cache'
 
 type AfterStore = {
   after: AfterFn
@@ -64,15 +56,10 @@ export async function runWithAfter<T>(
   const keepaliveLock = createKeepaliveLock(waitUntil)
   const afterCallbacks: AfterCallback[] = []
 
-  const cache = createCacheMap()
-
-  type CapturedContext = {
-    requestStore: RequestStore
-  }
-
   let context: CapturedContext | undefined = undefined
+  type CapturedContext = ReturnType<typeof captureContext>
 
-  const captureContext = (): CapturedContext => {
+  const captureContext = () => {
     const requestStore = requestAsyncStorage.getStore()
     if (!requestStore) {
       throw new Error('Invariant: requestAsyncStorage not found')
@@ -84,6 +71,7 @@ export async function runWithAfter<T>(
   }
 
   const afterImpl = (task: AfterTask) => {
+    console.log('after()')
     if (isStaticGeneration === undefined) {
       isStaticGeneration =
         staticGenerationAsyncStorage.getStore()?.isStaticGeneration ?? false
@@ -92,6 +80,7 @@ export async function runWithAfter<T>(
     if (isStaticGeneration) {
       // do not run after() for prerenders and static generation.
       // TODO(after): how do we make this log only if no bailout happened?
+      // capture the store and check if the page became fully static, maybe in app-render
       if (!didWarnAboutAfterInStatic) {
         const Log = require('../../build/output/log')
         const { yellow } = require('../../lib/picocolors')
@@ -167,15 +156,13 @@ export async function runWithAfter<T>(
 
     afterAsyncStorage.run(store, () =>
       requestAsyncStorage.run(requestStore, () =>
-        runWithReactCacheDispatcher(cache, getReact(), runCallbacksImpl)
+        requestStore.cacheScope.run(runCallbacksImpl)
       )
     )
   }
 
   try {
-    const res = await CacheDispatcherCacheStorage.run(cache, () =>
-      afterAsyncStorage.run(store, callback, store)
-    )
+    const res = await afterAsyncStorage.run(store, callback, store)
     if (!isStaticGeneration) {
       runCallbacks()
     }
@@ -210,13 +197,6 @@ function createKeepaliveLock(waitUntil: WaitUntilFn) {
   }
 }
 
-function getReact() {
-  // TODO(after): it kinda sucks to inject React via RAS...
-  // @ts-expect-error
-  return requestAsyncStorage.getStore()['React'] as typeof import('react')
-}
-
-// TODO(after): factor out?
 function isPromise(p: unknown): p is Promise<unknown> {
   return (
     p !== null &&

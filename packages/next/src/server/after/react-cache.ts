@@ -1,9 +1,111 @@
 import { AsyncLocalStorage } from 'async_hooks'
-import { requestAsyncStorage } from '../../client/components/request-async-storage.external'
 
-export type CacheDispatcher = {
-  __nextPatched?: boolean
+export function createCacheScope() {
+  const storage = createCacheMap()
+  return {
+    run: <T>(callback: () => T): T => {
+      return CacheScopeStorage.run(storage, () => callback())
+    },
+  }
+}
+
+export type CacheScope = ReturnType<typeof createCacheScope>
+
+// #region  custom cache dispatcher with support for scoping
+
+// Note that the plan is to upstream this into React itself,
+// but after() is an experimental feature, and this should be good enough for now.
+
+type CacheDispatcher = {
+  [HAS_CACHE_SCOPE]?: boolean
   getCacheForType: <T>(create: () => T) => T
+}
+
+const HAS_CACHE_SCOPE: unique symbol = Symbol.for('next.cacheScope')
+
+type CacheMap = Map<Function, unknown>
+
+function createCacheMap(): CacheMap {
+  return new Map()
+}
+
+function shouldInterceptCache() {
+  return !!CacheScopeStorage.getStore()
+}
+
+const CacheScopeStorage: AsyncLocalStorage<CacheMap> =
+  new AsyncLocalStorage<CacheMap>()
+
+/** forked from packages/react-server/src/flight/ReactFlightServerCache.js */
+function resolveCache(): CacheMap {
+  const store = CacheScopeStorage.getStore()
+  if (store) {
+    return store
+  }
+  return createCacheMap()
+}
+
+/** forked from packages/react-server/src/flight/ReactFlightServerCache.js */
+const PatchedCacheDispatcher: CacheDispatcher = {
+  getCacheForType<T>(resourceType: () => T): T {
+    if (!shouldInterceptCache()) {
+      throw new Error(
+        'Invariant: Expected patched cache dispatcher to run within CacheScopeStorage'
+      )
+    }
+    const cache = resolveCache()
+    let entry: T | undefined = cache.get(resourceType) as any
+    if (entry === undefined) {
+      entry = resourceType()
+      // TODO: Warn if undefined?
+      cache.set(resourceType, entry)
+    }
+    return entry
+  },
+}
+
+// #endregion
+
+// #region  injecting the patched dispatcher into React
+
+export function patchCacheScopeSupportIntoReact(React: typeof import('react')) {
+  const ReactCurrentCache = getReactCurrentCacheRef(React)
+  if (ReactCurrentCache.current) {
+    patchReactCache(ReactCurrentCache.current)
+  } else {
+    let current: (typeof ReactCurrentCache)['current'] = null
+    Object.defineProperty(ReactCurrentCache, 'current', {
+      get: () => current,
+      set: (maybeDispatcher) => {
+        try {
+          if (maybeDispatcher) {
+            patchReactCache(maybeDispatcher)
+          }
+        } catch (err) {
+          console.error('Invariant: could not patch the React cache dispatcher')
+        }
+        current = maybeDispatcher
+      },
+    })
+  }
+}
+
+function patchReactCache(dispatcher: CacheDispatcher) {
+  if (dispatcher[HAS_CACHE_SCOPE]) {
+    return
+  }
+  const { getCacheForType: originalGetCacheForType } = dispatcher
+
+  dispatcher.getCacheForType = function <T>(
+    this: CacheDispatcher,
+    create: () => T
+  ) {
+    if (shouldInterceptCache()) {
+      return PatchedCacheDispatcher.getCacheForType(create)
+    }
+    return originalGetCacheForType.call(this, create) as T
+  }
+  dispatcher[HAS_CACHE_SCOPE] = true
 }
 
 type ReactWithServerInternals = typeof import('react') &
@@ -45,113 +147,4 @@ function getReactCurrentCacheRef(React: typeof import('react')) {
   throw new Error('Internal error: Unable to access react cache internals')
 }
 
-export function patchCacheDispatcherWhenSet(React: typeof import('react')) {
-  const ReactCurrentCache = getReactCurrentCacheRef(React)
-  if (ReactCurrentCache.current) {
-    patchReactCache(ReactCurrentCache.current)
-  } else {
-    let current: (typeof ReactCurrentCache)['current'] = null
-    Object.defineProperty(ReactCurrentCache, 'current', {
-      get: () => current,
-      set: (maybeDispatcher) => {
-        try {
-          if (maybeDispatcher) {
-            patchReactCache(maybeDispatcher)
-          }
-        } catch (err) {
-          console.error('Internal error: could not patch cache the dispatcher')
-        }
-        current = maybeDispatcher
-      },
-    })
-  }
-}
-
-export function getReactCacheDispatcher(
-  React: typeof import('react')
-): CacheDispatcher | null {
-  const ReactCurrentCache = getReactCurrentCacheRef(React)
-  return ReactCurrentCache.current
-}
-
-export function patchReactCache(dispatcher: CacheDispatcher) {
-  if (dispatcher.__nextPatched) {
-    return
-  }
-  const { getCacheForType: originalGetCacheForType } = dispatcher
-
-  dispatcher.getCacheForType = function <T>(create: () => T) {
-    if (shouldInterceptCache()) {
-      return PatchedCacheDispatcher.getCacheForType(create)
-    }
-    return originalGetCacheForType.call(dispatcher, create) as T
-  }
-  dispatcher.__nextPatched = true
-}
-
-//==================================
-
-type CacheMap = Map<Function, unknown>
-
-export function createCacheMap(): CacheMap {
-  return new Map()
-}
-
-function shouldInterceptCache() {
-  return !!CacheDispatcherCacheStorage.getStore()
-}
-
-const CACHE_STORAGE_SYMBOL = Symbol.for('next.CacheDispatcherCacheStorage')
-
-export const CacheDispatcherCacheStorage: AsyncLocalStorage<CacheMap> =
-  // @ts-expect-error
-  globalThis[CACHE_STORAGE_SYMBOL] ||
-  // @ts-expect-error
-  (globalThis[CACHE_STORAGE_SYMBOL] = new AsyncLocalStorage<CacheMap>())
-
-/** forked from packages/react-server/src/flight/ReactFlightServerCache.js */
-function resolveCache(): CacheMap {
-  const store = CacheDispatcherCacheStorage.getStore()
-  if (store) {
-    return store
-  }
-  return createCacheMap()
-}
-
-/** forked from packages/react-server/src/flight/ReactFlightServerCache.js */
-export const PatchedCacheDispatcher: CacheDispatcher = {
-  getCacheForType<T>(resourceType: () => T): T {
-    if (!shouldInterceptCache()) {
-      throw new Error(
-        'Internal error: Expected patched cache dispatcher to run within CacheDispatcherCacheStorage'
-      )
-    }
-    const cache = resolveCache()
-    let entry: T | undefined = cache.get(resourceType) as any
-    if (entry === undefined) {
-      entry = resourceType()
-      // TODO: Warn if undefined?
-      cache.set(resourceType, entry)
-    }
-    return entry
-  },
-}
-
-//=====================================
-
-export async function runWithReactCacheDispatcher<T>(
-  cache: CacheMap,
-  React: typeof import('react'),
-  callback: () => T
-): Promise<T> {
-  const ReactCurrentCache = getReactCurrentCacheRef(React)
-  if (!ReactCurrentCache) return callback()
-
-  const prev = ReactCurrentCache.current
-  ReactCurrentCache.current = PatchedCacheDispatcher
-  try {
-    return await CacheDispatcherCacheStorage.run(cache, callback)
-  } finally {
-    ReactCurrentCache.current = prev
-  }
-}
+// #endregion

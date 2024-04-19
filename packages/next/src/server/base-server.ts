@@ -140,8 +140,8 @@ import { toRoute } from './lib/to-route'
 import type { DeepReadonly } from '../shared/lib/deep-readonly'
 import { isNodeNextRequest, isNodeNextResponse } from './base-http/helpers'
 import { patchSetHeaderWithCookieSupport } from './lib/patch-set-header'
-import { runWithAfter } from './after/after'
 import { getWaitUntil } from './after/wait-until'
+import { createNodeWaitUntil } from './after/wait-until-node'
 
 export type FindComponentsResult = {
   components: LoadComponentsReturnType
@@ -228,7 +228,10 @@ export interface Options {
 
 export type RenderOpts = PagesRenderOptsPartial & AppRenderOptsPartial
 
-export type LoadedRenderOpts = RenderOpts & LoadComponentsReturnType
+export type LoadedRenderOpts = RenderOpts &
+  LoadComponentsReturnType & {
+    waitUntil: (promise: Promise<any>) => void
+  }
 
 type BaseRenderOpts = RenderOpts & {
   poweredByHeader: boolean
@@ -821,9 +824,7 @@ export default abstract class Server<
           },
         },
         async (span) =>
-          this.runWithAfter(() =>
-            this.handleRequestImpl(req, res, parsedUrl)
-          ).finally(() => {
+          this.handleRequestImpl(req, res, parsedUrl).finally(() => {
             if (!span) return
             span.setAttributes({
               'http.status_code': res.statusCode,
@@ -1634,15 +1635,27 @@ export default abstract class Server<
     )
   }
 
-  private runWithAfter<T>(fn: () => T): Promise<T> {
-    const waitUntil = getWaitUntil(
+  private getWaitUntil(res: ServerResponse) {
+    const env =
       process.env.NEXT_RUNTIME === 'edge'
         ? 'edge'
         : this.minimalMode
         ? 'minimal'
         : 'node'
-    )
-    return runWithAfter(waitUntil, fn)
+
+    // TODO(after): this is a bit ugly
+    if (env === 'node') {
+      const nodeWaitUntil = createNodeWaitUntil()
+      if (!isNodeNextResponse(res)) {
+        throw new Error(
+          'Invariant: env is node, but response is not a node response'
+        )
+      }
+      res.originalResponse.on('close', () => nodeWaitUntil.finish())
+      return nodeWaitUntil.waitUntil
+    }
+
+    return getWaitUntil(env)
   }
 
   private async renderImpl(
@@ -2284,6 +2297,7 @@ export default abstract class Server<
         isDraftMode: isPreviewMode,
         isServerAction,
         postponed,
+        waitUntil: this.getWaitUntil(res),
       }
 
       if (isDebugPPRSkeleton) {
@@ -2373,7 +2387,12 @@ export default abstract class Server<
             }
 
             // Send the response now that we have copied it into the cache.
-            await sendResponse(req, res, response, context.renderOpts.waitUntil)
+            await sendResponse(
+              req,
+              res,
+              response,
+              context.renderOpts.pendingWaitUntil
+            )
             return null
           } catch (err) {
             // If this is during static generation, throw the error again.

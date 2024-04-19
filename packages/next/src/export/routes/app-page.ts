@@ -19,7 +19,6 @@ import { hasNextSupport } from '../../telemetry/ci-info'
 import { lazyRenderAppPage } from '../../server/future/route-modules/app-page/module.render'
 import { isBailoutToCSRError } from '../../shared/lib/lazy-dynamic/bailout-to-csr'
 import { NodeNextRequest, NodeNextResponse } from '../../server/base-http/node'
-import { runWithAfter } from '../../server/after/after'
 
 export const enum ExportedAppPageFiles {
   HTML = 'HTML',
@@ -51,18 +50,12 @@ export async function exportAppPage(
   }
 
   try {
-    const result = await runWithAfter(
-      function noWaitUntilInPrerender() {
-        throw new Error('waitUntil cannot be used during prerendering')
-      },
-      () =>
-        lazyRenderAppPage(
-          new NodeNextRequest(req),
-          new NodeNextResponse(res),
-          pathname,
-          query,
-          renderOpts
-        )
+    const result = await lazyRenderAppPage(
+      new NodeNextRequest(req),
+      new NodeNextResponse(res),
+      pathname,
+      query,
+      renderOpts
     )
 
     const html = result.toUnchunkedString()

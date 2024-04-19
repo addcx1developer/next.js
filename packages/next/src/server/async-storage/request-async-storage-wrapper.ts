@@ -20,6 +20,8 @@ import {
 import type { ResponseCookies } from '../web/spec-extension/cookies'
 import { RequestCookies } from '../web/spec-extension/cookies'
 import { DraftModeProvider } from './draft-mode-provider'
+import { runWithAfter } from '../after/after'
+import type { LoadedRenderOpts } from '../base-server'
 
 function getHeaders(headers: Headers | IncomingHttpHeaders): ReadonlyHeaders {
   const cleaned = HeadersAdapter.from(headers)
@@ -77,10 +79,16 @@ export const RequestAsyncStorageWrapper: AsyncStorageWrapper<
     }
 
     const cacheScope = renderOpts?.ComponentMod.createCacheScope()
-    if (cacheScope) {
+    if (cacheScope && renderOpts && 'waitUntil' in renderOpts) {
+      const { waitUntil } = renderOpts as LoadedRenderOpts
       const originalCallback = callback
       callback = (requestStore) =>
-        cacheScope.run(() => originalCallback(requestStore))
+        cacheScope.run(
+          () =>
+            runWithAfter(waitUntil, () =>
+              originalCallback(requestStore)
+            ) as Result // TODO(after): check if non-promise cases can happen here
+        )
     }
 
     function defaultOnUpdateCookies(cookies: string[]) {

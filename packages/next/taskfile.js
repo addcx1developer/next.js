@@ -1641,14 +1641,14 @@ export async function copy_vendor_react(task_) {
       .source(join(reactDomDir, 'LICENSE'))
       .target(`src/compiled/react-dom${packageSuffix}`)
     yield task
-      .source(join(reactDomDir, 'cjs/**/*.js'))
+      .source(join(reactDomDir, '**/*.js'))
       // eslint-disable-next-line require-yield
       .run({ every: true }, function* (file) {
         const source = file.data.toString()
         // We replace the module/chunk loading code with our own implementation in Next.js.
         file.data = ensureVendoredReactIsUsed(source)
       })
-      .target(`src/compiled/react-dom${packageSuffix}/cjs`)
+      .target(`src/compiled/react-dom${packageSuffix}`)
 
     // Remove unused files
     const reactDomCompiledDir = join(
